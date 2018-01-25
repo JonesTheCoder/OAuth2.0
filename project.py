@@ -1,14 +1,10 @@
 from flask import Flask, render_template, request, redirect, jsonify, url_for, flash
-
 from sqlalchemy import create_engine, asc
 from sqlalchemy.orm import sessionmaker
 from database_setup import Base, Restaurant, MenuItem, User
-
-
 from flask import session as login_session
 import random
 import string
-
 from oauth2client.client import flow_from_clientsecrets
 from oauth2client.client import FlowExchangeError
 import httplib2
@@ -18,17 +14,18 @@ import requests
 
 app = Flask(__name__)
 
-
-CLIENT_ID = '406906959356-mjmsua8f508t37v3oegemsrvmag8ek63.apps.googleusercontent.com'
+CLIENT_ID = json.loads(
+    open('client_secrets.json', 'r').read())['web']['client_id']
 APPLICATION_NAME = "Restaurant Menu Application"
 
 
-#Connect to Database and create database session
+# Connect to Database and create database session
 engine = create_engine('sqlite:///restaurantmenuwithusers.db')
 Base.metadata.bind = engine
 
 DBSession = sessionmaker(bind=engine)
 session = DBSession()
+
 
 # Create anti-forgery state token
 @app.route('/login')
@@ -39,7 +36,7 @@ def showLogin():
     # return "The current session state is %s" % login_session['state']
     return render_template('login.html', STATE=state)
 
-# FACEBOOK LOGIN
+
 @app.route('/fbconnect', methods=['POST'])
 def fbconnect():
     if request.args.get('state') != login_session['state']:
@@ -122,7 +119,6 @@ def fbdisconnect():
     result = h.request(url, 'DELETE')[1]
     return "you have been logged out"
 
-#GOOGLE LOGIN
 
 @app.route('/gconnect', methods=['POST'])
 def gconnect():
@@ -136,10 +132,9 @@ def gconnect():
 
     try:
         # Upgrade the authorization code into a credentials object
-        oauth_flow = flow_from_clientsecrets('client_secret_406906959356-mjmsua8f508t37v3oegemsrvmag8ek63.apps.googleusercontent.com.json', scope='')
+        oauth_flow = flow_from_clientsecrets('client_secrets.json', scope='')
         oauth_flow.redirect_uri = 'postmessage'
         credentials = oauth_flow.step2_exchange(code)
-
     except FlowExchangeError:
         response = make_response(
             json.dumps('Failed to upgrade the authorization code.'), 401)
@@ -147,13 +142,7 @@ def gconnect():
         return response
 
     # Check that the access token is valid.
-    # 01.25.18
     access_token = credentials.access_token
-    # From http://stackoverflow.com/questions/29565392/error-storing-oauth-credentials-in-session-when-authenticating-with-google
-    # also from this udacity forum: https://discussions.udacity.com/t/google-oauth-issue-i-am-only-seeing-the-public-site-templates-to-my-app/171342/4
-    #login_session['access_token'] = credentials.access_token
-    #access_token = login_session['access_token']
-
     url = ('https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=%s'
            % access_token)
     h = httplib2.Http()
@@ -162,7 +151,7 @@ def gconnect():
     if result.get('error') is not None:
         response = make_response(json.dumps(result.get('error')), 500)
         response.headers['Content-Type'] = 'application/json'
-        #01.25.18return response
+        return response
 
     # Verify that the access token is used for the intended user.
     gplus_id = credentials.id_token['sub']
@@ -182,9 +171,9 @@ def gconnect():
 
     stored_access_token = login_session.get('access_token')
     stored_gplus_id = login_session.get('gplus_id')
-
     if stored_access_token is not None and gplus_id == stored_gplus_id:
-        response = make_response(json.dumps('Current user is already connected.'), 200)
+        response = make_response(json.dumps('Current user is already connected.'),
+                                 200)
         response.headers['Content-Type'] = 'application/json'
         return response
 
@@ -202,9 +191,11 @@ def gconnect():
     login_session['username'] = data['name']
     login_session['picture'] = data['picture']
     login_session['email'] = data['email']
+    # ADD PROVIDER TO LOGIN SESSION
+    login_session['provider'] = 'google'
 
-    # See if a user exists, if it doesn't make a new one
-    user_id = getUserID(login_session['email'])
+    # see if user exists, if it doesn't make a new one
+    user_id = getUserID(data["email"])
     if not user_id:
         user_id = createUser(login_session)
     login_session['user_id'] = user_id
@@ -218,10 +209,10 @@ def gconnect():
     output += ' " style = "width: 300px; height: 300px;border-radius: 150px;-webkit-border-radius: 150px;-moz-border-radius: 150px;"> '
     flash("you are now logged in as %s" % login_session['username'])
     print "done!"
-    print data
     return output
 
 # User Helper Functions
+
 
 def createUser(login_session):
     newUser = User(name=login_session['username'], email=login_session[
@@ -244,48 +235,26 @@ def getUserID(email):
     except:
         return None
 
-
-
-
-
-    # DISCONNECT - Revoke a current user's token and reset their login_session
+# DISCONNECT - Revoke a current user's token and reset their login_session
 
 
 @app.route('/gdisconnect')
 def gdisconnect():
+    # Only disconnect a connected user.
     access_token = login_session.get('access_token')
-
     if access_token is None:
-        print 'Access Token is None'
-        response = make_response(json.dumps('Current user not connected.'), 401)
+        response = make_response(
+            json.dumps('Current user not connected.'), 401)
         response.headers['Content-Type'] = 'application/json'
         return response
-
-    print 'In gdisconnect access token is %s', access_token
-    print 'User name is: '
-    print login_session['username']
-
-    #01.25.18 url = 'https://accounts.google.com/o/oauth2/revoke?token=%s' % login_session['access_token']
     url = 'https://accounts.google.com/o/oauth2/revoke?token=%s' % access_token
     h = httplib2.Http()
     result = h.request(url, 'GET')[0]
-    #01.25.18 print 'result is '
-    #01.25.18 print result
-    result = h.request(url, 'GET')[0]
-    print 'Revoke token result is: ', result
-
     if result['status'] == '200':
-        del login_session['access_token']
-        del login_session['gplus_id']
-        del login_session['username']
-        del login_session['email']
-        del login_session['picture']
-
         response = make_response(json.dumps('Successfully disconnected.'), 200)
         response.headers['Content-Type'] = 'application/json'
         return response
     else:
-
         response = make_response(json.dumps('Failed to revoke token for given user.', 400))
         response.headers['Content-Type'] = 'application/json'
         return response
@@ -349,7 +318,7 @@ def editRestaurant(restaurant_id):
     if 'username' not in login_session:
         return redirect('/login')
     if editedRestaurant.user_id != login_session['user_id']:
-        return "<script>function myFunction() {alert('You are not authorized to edit this restaurant. Please create your own restaurant in order to edit.');}</script><body onload='myFunction()''>"
+        return "<script>function myFunction() {alert('You are not authorized to edit this restaurant. Please create your own restaurant in order to edit.');}</script><body onload='myFunction()'>"
     if request.method == 'POST':
         if request.form['name']:
             editedRestaurant.name = request.form['name']
@@ -367,7 +336,7 @@ def deleteRestaurant(restaurant_id):
     if 'username' not in login_session:
         return redirect('/login')
     if restaurantToDelete.user_id != login_session['user_id']:
-        return "<script>function myFunction() {alert('You are not authorized to delete this restaurant. Please create your own restaurant in order to delete.');}</script><body onload='myFunction()''>"
+        return "<script>function myFunction() {alert('You are not authorized to delete this restaurant. Please create your own restaurant in order to delete.');}</script><body onload='myFunction()'>"
     if request.method == 'POST':
         session.delete(restaurantToDelete)
         flash('%s Successfully Deleted' % restaurantToDelete.name)
@@ -399,14 +368,14 @@ def newMenuItem(restaurant_id):
         return redirect('/login')
     restaurant = session.query(Restaurant).filter_by(id=restaurant_id).one()
     if login_session['user_id'] != restaurant.user_id:
-        return "<script>function myFunction() {alert('You are not authorized to add menu items to this restaurant. Please create your own restaurant in order to add items.');}</script><body onload='myFunction()''>"
-    if request.method == 'POST':
-        newItem = MenuItem(name=request.form['name'], description=request.form['description'], price=request.form[
-                           'price'], course=request.form['course'], restaurant_id=restaurant_id, user_id=restaurant.user_id)
-        session.add(newItem)
-        session.commit()
-        flash('New Menu %s Item Successfully Created' % (newItem.name))
-        return redirect(url_for('showMenu', restaurant_id=restaurant_id))
+        return "<script>function myFunction() {alert('You are not authorized to add menu items to this restaurant. Please create your own restaurant in order to add items.');}</script><body onload='myFunction()'>"
+        if request.method == 'POST':
+            newItem = MenuItem(name=request.form['name'], description=request.form['description'], price=request.form[
+                               'price'], course=request.form['course'], restaurant_id=restaurant_id, user_id=restaurant.user_id)
+            session.add(newItem)
+            session.commit()
+            flash('New Menu %s Item Successfully Created' % (newItem.name))
+            return redirect(url_for('showMenu', restaurant_id=restaurant_id))
     else:
         return render_template('newmenuitem.html', restaurant_id=restaurant_id)
 
@@ -420,7 +389,7 @@ def editMenuItem(restaurant_id, menu_id):
     editedItem = session.query(MenuItem).filter_by(id=menu_id).one()
     restaurant = session.query(Restaurant).filter_by(id=restaurant_id).one()
     if login_session['user_id'] != restaurant.user_id:
-        return "<script>function myFunction() {alert('You are not authorized to edit menu items to this restaurant. Please create your own restaurant in order to edit items.');}</script><body onload='myFunction()''>"
+        return "<script>function myFunction() {alert('You are not authorized to edit menu items to this restaurant. Please create your own restaurant in order to edit items.');}</script><body onload='myFunction()'>"
     if request.method == 'POST':
         if request.form['name']:
             editedItem.name = request.form['name']
@@ -446,7 +415,7 @@ def deleteMenuItem(restaurant_id, menu_id):
     restaurant = session.query(Restaurant).filter_by(id=restaurant_id).one()
     itemToDelete = session.query(MenuItem).filter_by(id=menu_id).one()
     if login_session['user_id'] != restaurant.user_id:
-        return "<script>function myFunction() {alert('You are not authorized to delete menu items to this restaurant. Please create your own restaurant in order to delete items.');}</script><body onload='myFunction()''>"
+        return "<script>function myFunction() {alert('You are not authorized to delete menu items to this restaurant. Please create your own restaurant in order to delete items.');}</script><body onload='myFunction()'>"
     if request.method == 'POST':
         session.delete(itemToDelete)
         session.commit()
@@ -455,7 +424,8 @@ def deleteMenuItem(restaurant_id, menu_id):
     else:
         return render_template('deleteMenuItem.html', item=itemToDelete)
 
-#Disconnect based on provider
+
+# Disconnect based on provider
 @app.route('/disconnect')
 def disconnect():
     if 'provider' in login_session:
